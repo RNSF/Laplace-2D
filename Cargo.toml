@@ -1,0 +1,9 @@
+[package]
+name = "Laplace-2D"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+egui_plot = "0.31"
