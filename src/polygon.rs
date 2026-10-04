@@ -1,6 +1,9 @@
 use crate::shape::Shape;
 use eframe::egui;
 use egui_plot::{Line, PlotPoints, Points};
+use nalgebra::Point2;
+use rand::Rng;
+use rand::RngExt;
 use std::fs;
 
 pub struct PolygonShape {
@@ -38,18 +41,103 @@ fn point_to_segment_distance(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 }
 
 impl Shape for PolygonShape {
-    fn distance_to(&self, p: [f64; 2]) -> f64 {
+    fn distance_to(&self, p: Point2<f64>) -> f64 {
+        let p_arr = [p.x, p.y];
         let mut min_dist = f64::MAX;
         let n = self.polygon.len();
         for i in 0..n {
             let a = self.polygon[i];
             let b = self.polygon[(i + 1) % n];
-            let dist = point_to_segment_distance(p, a, b);
+            let dist = point_to_segment_distance(p_arr, a, b);
             if dist < min_dist {
                 min_dist = dist;
             }
         }
         min_dist
+    }
+
+    fn closest_point(&self, p: Point2<f64>) -> Point2<f64> {
+        let p_arr = [p.x, p.y];
+        if self.is_point_inside(p) {
+            return p;
+        }
+        let mut min_dist = f64::MAX;
+        let mut closest = p_arr;
+        let n = self.polygon.len();
+        for i in 0..n {
+            let a = self.polygon[i];
+            let b = self.polygon[(i + 1) % n];
+            let ab = [b[0] - a[0], b[1] - a[1]];
+            let ap = [p_arr[0] - a[0], p_arr[1] - a[1]];
+            let ab_len_sq = ab[0] * ab[0] + ab[1] * ab[1];
+            let c = if ab_len_sq == 0.0 {
+                a
+            } else {
+                let t = ((ap[0] * ab[0] + ap[1] * ab[1]) / ab_len_sq).clamp(0.0, 1.0);
+                [a[0] + t * ab[0], a[1] + t * ab[1]]
+            };
+            let dx = p_arr[0] - c[0];
+            let dy = p_arr[1] - c[1];
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < min_dist {
+                min_dist = dist;
+                closest = c;
+            }
+        }
+        Point2::new(closest[0], closest[1])
+    }
+
+    fn is_point_inside(&self, p: Point2<f64>) -> bool {
+        let mut inside = false;
+        let n = self.polygon.len();
+        if n < 3 {
+            return false;
+        }
+        let mut j = n - 1;
+        for i in 0..n {
+            let xi = self.polygon[i][0];
+            let yi = self.polygon[i][1];
+            let xj = self.polygon[j][0];
+            let yj = self.polygon[j][1];
+
+            let intersect = ((yi > p.y) != (yj > p.y))
+                && (p.x < (xj - xi) * (p.y - yi) / (yj - yi + f64::EPSILON) + xi);
+            if intersect {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+
+    fn random_point_inside<R: Rng + ?Sized>(&self, rng: &mut R) -> Point2<f64>
+    where
+        Self: Sized,
+    {
+        if self.polygon.is_empty() {
+            return Point2::origin();
+        }
+
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut min_y = f64::MAX;
+        let mut max_y = f64::MIN;
+
+        for v in &self.polygon {
+            min_x = min_x.min(v[0]);
+            max_x = max_x.max(v[0]);
+            min_y = min_y.min(v[1]);
+            max_y = max_y.max(v[1]);
+        }
+
+        loop {
+            let x = rng.random_range(min_x..=max_x);
+            let y = rng.random_range(min_y..=max_y);
+            let p = Point2::new(x, y);
+            if self.is_point_inside(p) {
+                return p;
+            }
+        }
     }
 
     fn render_plot(&mut self, plot_ui: &mut egui_plot::PlotUi, ctx: &egui::Context) {

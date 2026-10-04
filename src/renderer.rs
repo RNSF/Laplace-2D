@@ -1,5 +1,6 @@
 use crate::shape::Shape;
 use eframe::egui::{Color32, ColorImage};
+use nalgebra::Point2;
 
 pub trait ShapeRenderer: Send + Sync {
     fn render_image(
@@ -40,7 +41,7 @@ impl ShapeRenderer for DistanceFieldRenderer {
                 let u = x_idx as f64 / (width as f64 - 1.0);
                 let x = min_val + u * (max_val - min_val);
 
-                let dist = shape.distance_to([x, y]);
+                let dist = shape.distance_to(Point2::new(x, y));
                 let t = (dist / self.max_expected_dist).clamp(0.0, 1.0);
 
                 let r = ((1.0 - t).powi(2) * 255.0) as u8;
