@@ -1,13 +1,14 @@
-use crate::shape::Shape;
+use crate::shape::{BoundaryCondition, BoundaryConditionResult, BoundaryType, Shape};
 use eframe::egui;
 use egui_plot::{Line, PlotPoints, Points};
 use nalgebra::Point2;
-use rand::Rng;
 use rand::RngExt;
+use rand::rngs::ThreadRng;
 use std::fs;
 
 pub struct PolygonShape {
     pub polygon: Vec<[f64; 2]>,
+    pub boundaries: Vec<BoundaryCondition>, // One per edge segment
     pub dragging_vertex: Option<usize>,
 }
 
@@ -110,10 +111,7 @@ impl Shape for PolygonShape {
         inside
     }
 
-    fn random_point_inside<R: Rng + ?Sized>(&self, rng: &mut R) -> Point2<f64>
-    where
-        Self: Sized,
-    {
+    fn random_point_inside(&self, rng: &mut ThreadRng) -> Point2<f64> {
         if self.polygon.is_empty() {
             return Point2::origin();
         }
@@ -137,6 +135,55 @@ impl Shape for PolygonShape {
             if self.is_point_inside(p) {
                 return p;
             }
+        }
+    }
+
+    fn boundary_condition_at(&self, p: Point2<f64>) -> BoundaryConditionResult {
+        let p_arr = [p.x, p.y];
+        let n = self.polygon.len();
+
+        let mut min_dist = f64::MAX;
+        let mut best_closest = p_arr;
+        let mut best_edge_idx = 0;
+
+        for i in 0..n {
+            let a = self.polygon[i];
+            let b = self.polygon[(i + 1) % n];
+            let ab = [b[0] - a[0], b[1] - a[1]];
+            let ap = [p_arr[0] - a[0], p_arr[1] - a[1]];
+            let ab_len_sq = ab[0] * ab[0] + ab[1] * ab[1];
+
+            let c = if ab_len_sq == 0.0 {
+                a
+            } else {
+                let t = ((ap[0] * ab[0] + ap[1] * ab[1]) / ab_len_sq).clamp(0.0, 1.0);
+                [a[0] + t * ab[0], a[1] + t * ab[1]]
+            };
+
+            let dx = p_arr[0] - c[0];
+            let dy = p_arr[1] - c[1];
+            let dist = (dx * dx + dy * dy).sqrt();
+
+            if dist < min_dist {
+                min_dist = dist;
+                best_closest = c;
+                best_edge_idx = i;
+            }
+        }
+
+        let edge_bc = self
+            .boundaries
+            .get(best_edge_idx)
+            .copied()
+            .unwrap_or(BoundaryCondition {
+                bc_type: BoundaryType::First,
+                value: 0.0,
+            });
+
+        BoundaryConditionResult {
+            bc_type: edge_bc.bc_type,
+            value: edge_bc.value,
+            closest_point: Point2::new(best_closest[0], best_closest[1]),
         }
     }
 
@@ -180,6 +227,11 @@ impl Shape for PolygonShape {
                 if let Some(idx) = delete_idx {
                     if self.polygon.len() > 3 {
                         self.polygon.remove(idx);
+                        if idx < self.boundaries.len() {
+                            self.boundaries.remove(idx);
+                        } else if !self.boundaries.is_empty() {
+                            self.boundaries.pop();
+                        }
                         self.dragging_vertex = None;
                     }
                 }
@@ -228,6 +280,17 @@ impl Shape for PolygonShape {
                     }
                     if let Some(seg_idx) = clicked_segment {
                         self.polygon.insert(seg_idx + 1, insert_pos);
+
+                        let default_bc =
+                            self.boundaries
+                                .get(seg_idx)
+                                .copied()
+                                .unwrap_or(BoundaryCondition {
+                                    bc_type: BoundaryType::First,
+                                    value: 0.0,
+                                });
+                        self.boundaries.insert(seg_idx + 1, default_bc);
+
                         self.dragging_vertex = Some(seg_idx + 1);
                     }
                 }
@@ -252,6 +315,61 @@ impl Shape for PolygonShape {
         ui.label("• Left-click & drag vertex: Move point");
         ui.label("• Left-click line: Add & drag new point");
         ui.label("• Right-click vertex: Delete point");
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.heading("Edge Boundary Conditions");
+
+        // Ensure boundaries vector length matches polygon edge count
+        while self.boundaries.len() < self.polygon.len() {
+            self.boundaries.push(BoundaryCondition {
+                bc_type: BoundaryType::First,
+                value: 0.0,
+            });
+        }
+        if self.boundaries.len() > self.polygon.len() {
+            self.boundaries.truncate(self.polygon.len());
+        }
+
+        // Render controls for each edge segment using a uniquely-sourced ScrollArea
+        egui::ScrollArea::vertical()
+            .id_source(format!("polygon_scroll_{:p}", self as *const Self))
+            .max_height(250.0)
+            .show(ui, |ui| {
+                for i in 0..self.polygon.len() {
+                    ui.push_id(i, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Edge {}:", i));
+
+                            // Type selector (First vs Second)
+                            egui::ComboBox::from_label("")
+                                .selected_text(match self.boundaries[i].bc_type {
+                                    BoundaryType::First => "First (Dirichlet)",
+                                    BoundaryType::Second => "Second (Neumann)",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.boundaries[i].bc_type,
+                                        BoundaryType::First,
+                                        "First (Dirichlet)",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.boundaries[i].bc_type,
+                                        BoundaryType::Second,
+                                        "Second (Neumann)",
+                                    );
+                                });
+                        });
+
+                        // Value slider/input
+                        ui.add(
+                            egui::Slider::new(&mut self.boundaries[i].value, -10.0..=10.0)
+                                .text("Value"),
+                        );
+                        ui.add_space(4.0);
+                    });
+                }
+            });
     }
 
     fn save_to(&self, path: &str) -> std::io::Result<()> {
@@ -274,8 +392,20 @@ impl Shape for PolygonShape {
             }
         }
         if new_poly.len() >= 3 {
+            let boundaries = (0..new_poly.len())
+                .map(|i| BoundaryCondition {
+                    bc_type: if i % 2 == 0 {
+                        BoundaryType::First
+                    } else {
+                        BoundaryType::Second
+                    },
+                    value: i as f64 * 1.5,
+                })
+                .collect();
+
             Ok(Self {
                 polygon: new_poly,
+                boundaries,
                 dragging_vertex: None,
             })
         } else {
@@ -284,8 +414,21 @@ impl Shape for PolygonShape {
     }
 
     fn default_shape() -> Self {
+        let poly = default_polygon();
+        let boundaries = (0..poly.len())
+            .map(|i| BoundaryCondition {
+                bc_type: if i % 2 == 0 {
+                    BoundaryType::First
+                } else {
+                    BoundaryType::Second
+                },
+                value: i as f64 * 1.5,
+            })
+            .collect();
+
         Self {
-            polygon: default_polygon(),
+            polygon: poly,
+            boundaries,
             dragging_vertex: None,
         }
     }

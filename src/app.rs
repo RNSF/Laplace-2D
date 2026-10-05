@@ -1,6 +1,8 @@
 use crate::implicit::ImplicitCurveShape;
 use crate::polygon::PolygonShape;
-use crate::renderer::{DistanceFieldRenderer, ShapeRenderer, SolidBackgroundRenderer};
+use crate::renderer::{
+    DistanceFieldRenderer, ShapeRenderer, SolidBackgroundRenderer, WalkOnSphereRenderer,
+};
 use crate::shape::Shape;
 use eframe::egui::{self, Color32, TextureOptions};
 use egui_plot::{Plot, PlotImage, PlotPoint};
@@ -20,6 +22,11 @@ pub struct ShapeApp {
     pub current_filename: String,
     pub new_file_name: String,
     pub available_files: Vec<String>,
+    // Caching and manual render trigger fields
+    texture: Option<egui::TextureHandle>,
+    last_renderer_index: usize,
+    last_shape_type_index: usize,
+    render_requested: bool,
 }
 
 impl ShapeApp {
@@ -95,6 +102,7 @@ impl ShapeApp {
         self.new_file_name = "my_shape.txt".to_string();
         self.refresh_file_list();
         self.status_message = "Switched shape type".to_string();
+        self.render_requested = true; // Request render on switch
     }
 
     fn render_plot(&mut self, plot_ui: &mut egui_plot::PlotUi, ctx: &egui::Context) {
@@ -123,11 +131,13 @@ impl ShapeApp {
             0 => {
                 let poly = PolygonShape::load_from(path)?;
                 self.shape = ActiveShapeVariant::Polygon(poly);
+                self.render_requested = true;
                 Ok(())
             }
             _ => {
                 let curve = ImplicitCurveShape::load_from(path)?;
                 self.shape = ActiveShapeVariant::ImplicitCurve(curve);
+                self.render_requested = true;
                 Ok(())
             }
         }
@@ -140,6 +150,7 @@ impl ShapeApp {
                 self.shape = ActiveShapeVariant::ImplicitCurve(ImplicitCurveShape::default_shape())
             }
         }
+        self.render_requested = true;
     }
 }
 
@@ -167,6 +178,10 @@ impl Default for ShapeApp {
             current_filename: default_filename,
             new_file_name: "my_shape.txt".to_string(),
             available_files: Vec::new(),
+            texture: None,
+            last_renderer_index: 0,
+            last_shape_type_index: 0,
+            render_requested: true, // Render initially on startup
         };
         app.refresh_file_list();
         app
@@ -180,6 +195,13 @@ impl eframe::App for ShapeApp {
             ui.heading("Distance Field Studio");
             ui.separator();
 
+            // Explicit Render Button prominently at the top
+            if ui.button("▶ Render / Update View").clicked() {
+                self.render_requested = true;
+                self.status_message = "Rendering updated view...".to_string();
+            }
+
+            ui.add_space(8.0);
             ui.label("📐 **Shape Type:**");
             let mut selected_type = self.shape_type_index;
             egui::ComboBox::from_id_salt("shape_type_combo")
@@ -208,15 +230,17 @@ impl eframe::App for ShapeApp {
             egui::ComboBox::from_id_salt("renderer_combo")
                 .selected_text(match selected_renderer {
                     0 => "Distance Field",
-                    _ => "Solid Background (None)",
+                    1 => "Solid Background (None)",
+                    _ => "Walk on Spheres",
                 })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut selected_renderer, 0, "Distance Field");
                     ui.selectable_value(&mut selected_renderer, 1, "Solid Background (None)");
+                    ui.selectable_value(&mut selected_renderer, 2, "Walk on Spheres");
                 });
             if selected_renderer != self.renderer_index {
                 self.renderer_index = selected_renderer;
-                self.status_message = "Switched renderer".to_string();
+                self.status_message = "Switched renderer (press Render to apply)".to_string();
             }
 
             ui.add_space(8.0);
@@ -316,41 +340,54 @@ impl eframe::App for ShapeApp {
             });
         });
 
-        // --- 2. Central Panel ---
+        // --- 2. Central Panel & Manual Rendering Logic ---
+        // --- 2. Central Panel & Manual Rendering Logic ---
         egui::CentralPanel::default().show(ctx, |ui| {
             let width = 200;
             let height = 200;
             let min_val = -5.0;
             let max_val = 5.0;
 
-            // Choose the active renderer implementation dynamically
-            let renderer: Box<dyn ShapeRenderer> = match self.renderer_index {
-                0 => Box::new(DistanceFieldRenderer::new(7.0)),
-                _ => Box::new(SolidBackgroundRenderer::new(Color32::from_rgb(25, 25, 30))),
-            };
+            // Only re-render when the button has been explicitly clicked
+            if self.render_requested || self.texture.is_none() {
+                let renderer: Box<dyn ShapeRenderer> = match self.renderer_index {
+                    0 => Box::new(DistanceFieldRenderer::new(7.0)),
+                    1 => Box::new(SolidBackgroundRenderer::new(Color32::from_rgb(25, 25, 30))),
+                    _ => Box::new(WalkOnSphereRenderer::new(1000.0)),
+                };
 
-            let color_image =
-                renderer.render_image(self.active_shape_trait(), width, height, min_val, max_val);
+                let color_image =
+                    renderer.render_image(self.active_shape_trait(), width, height, min_val, max_val);
 
-            let texture = ctx.load_texture(
-                "interactive_shape_dist",
-                color_image,
-                TextureOptions::LINEAR,
-            );
+                let texture = ctx.load_texture(
+                    "interactive_shape_dist",
+                    color_image,
+                    TextureOptions::LINEAR,
+                );
 
-            Plot::new("interactive_distance_plot")
-                .view_aspect(1.0)
-                .allow_drag(false)
-                .allow_scroll(false)
-                .allow_zoom(true)
-                .show(ui, |plot_ui| {
-                    let center = PlotPoint::new(0.0, 0.0);
-                    let size =
-                        egui::Vec2::new((max_val - min_val) as f32, (max_val - min_val) as f32);
-                    plot_ui.image(PlotImage::new(&texture, center, size));
+                self.texture = Some(texture);
+                self.last_renderer_index = self.renderer_index;
+                self.last_shape_type_index = self.shape_type_index;
+                self.render_requested = false; // Reset flag after rendering completes
+            }
 
-                    self.render_plot(plot_ui, ctx);
-                });
+            // Clone the texture handle so it doesn't hold an immutable borrow on `self.texture`
+            // while `self.render_plot` requires a mutable borrow (`&mut self`).
+            if let Some(texture) = self.texture.clone() {
+                Plot::new("interactive_distance_plot")
+                    .view_aspect(1.0)
+                    .allow_drag(false)
+                    .allow_scroll(false)
+                    .allow_zoom(true)
+                    .show(ui, |plot_ui| {
+                        let center = PlotPoint::new(0.0, 0.0);
+                        let size =
+                            egui::Vec2::new((max_val - min_val) as f32, (max_val - min_val) as f32);
+                        plot_ui.image(PlotImage::new(&texture, center, size));
+
+                        self.render_plot(plot_ui, ctx);
+                    });
+            }
         });
     }
 }

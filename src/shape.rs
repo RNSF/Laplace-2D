@@ -1,5 +1,24 @@
 use nalgebra::Point2;
-use rand::Rng;
+use rand::rngs::ThreadRng;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundaryType {
+    First,  // Dirichlet (e.g., fixed value)
+    Second, // Second type / Neumann (e.g., derivative/flux)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BoundaryCondition {
+    pub bc_type: BoundaryType,
+    pub value: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BoundaryConditionResult {
+    pub bc_type: BoundaryType,
+    pub value: f64,
+    pub closest_point: Point2<f64>,
+}
 
 pub trait Shape: Send + Sync {
     /// Calculates the minimum distance from the point to the shape.
@@ -12,9 +31,7 @@ pub trait Shape: Send + Sync {
     fn is_point_inside(&self, p: Point2<f64>) -> bool;
 
     /// Generates a random point inside the shape using the provided RNG.
-    fn random_point_inside<R: Rng + ?Sized>(&self, rng: &mut R) -> Point2<f64>
-    where
-        Self: Sized;
+    fn random_point_inside(&self, rng: &mut ThreadRng) -> Point2<f64>;
 
     /// Renders the shape onto the egui plot UI.
     fn render_plot(&mut self, plot_ui: &mut egui_plot::PlotUi, ctx: &eframe::egui::Context);
@@ -34,4 +51,7 @@ pub trait Shape: Send + Sync {
     fn default_shape() -> Self
     where
         Self: Sized;
+
+    /// Returns the boundary condition and closest point for an arbitrary query point.
+    fn boundary_condition_at(&self, p: Point2<f64>) -> BoundaryConditionResult;
 }

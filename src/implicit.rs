@@ -1,7 +1,8 @@
-use crate::shape::Shape;
+use crate::shape::{BoundaryCondition, BoundaryConditionResult, BoundaryType, Shape};
 use eframe::egui;
 use egui_plot::{Line, PlotPoints, Points};
 use nalgebra::Point2;
+use rand::prelude::ThreadRng;
 use rand::{Rng, RngExt};
 use std::fs;
 
@@ -14,8 +15,6 @@ pub struct ImplicitCurveShape {
 
 impl Shape for ImplicitCurveShape {
     fn distance_to(&self, p: Point2<f64>) -> f64 {
-        // For an ellipse, we can approximate the signed distance or boundary distance.
-        // Using the gradient approximation method from your original implementation:
         let d = p - self.center;
         let rx = self.radius_x.max(0.01);
         let ry = self.radius_y.max(0.01);
@@ -33,24 +32,19 @@ impl Shape for ImplicitCurveShape {
     }
 
     fn closest_point(&self, p: Point2<f64>) -> Point2<f64> {
-        // Project to normalized space (unit circle), find closest, then map back
         let d = p - self.center;
         let rx = self.radius_x.max(0.01);
         let ry = self.radius_y.max(0.01);
 
-        // If inside or at the center, project out to the boundary or handle gracefully
         if self.is_point_inside(p) {
-            // Approximation for inside closest point to boundary, or just use the gradient descent / radial projection
             let norm_dist = (d.x * d.x) / (rx * rx) + (d.y * d.y) / (ry * ry);
             if norm_dist == 0.0 {
                 return self.center + nalgebra::Vector2::new(rx, 0.0);
             }
-            // Radial projection to boundary
             let scale = 1.0 / norm_dist.sqrt();
             return self.center + nalgebra::Vector2::new(d.x * scale, d.y * scale);
         }
 
-        // For points outside, project onto the ellipse boundary using normalized coordinates
         let nx = d.x / rx;
         let ny = d.y / ry;
         let len = (nx * nx + ny * ny).sqrt();
@@ -72,15 +66,25 @@ impl Shape for ImplicitCurveShape {
         ((d.x * d.x) / (rx * rx)) + ((d.y * d.y) / (ry * ry)) <= 1.0
     }
 
-    fn random_point_inside<R: Rng + ?Sized>(&self, rng: &mut R) -> Point2<f64> {
-        // Uniform sampling inside an ellipse using polar coordinates with radius scaling
-        let r = rng.random::<f64>().sqrt(); // sqrt ensures uniform area distribution
+    fn random_point_inside(&self, rng: &mut ThreadRng) -> Point2<f64> {
+        let r = rng.random::<f64>().sqrt();
         let theta = rng.random_range(0.0..std::f64::consts::TAU);
 
         let x = self.center.x + r * self.radius_x * theta.cos();
         let y = self.center.y + r * self.radius_y * theta.sin();
 
         Point2::new(x, y)
+    }
+
+    fn boundary_condition_at(&self, p: Point2<f64>) -> BoundaryConditionResult {
+        let cp = self.closest_point(p);
+        
+        // Custom fixed function/value for type 1 boundary condition on the implicit curve
+        BoundaryConditionResult {
+            bc_type: BoundaryType::First,
+            value: 1.0, // Fixed default value for the implicit shape boundary
+            closest_point: cp,
+        }
     }
 
     fn render_plot(&mut self, plot_ui: &mut egui_plot::PlotUi, ctx: &egui::Context) {
